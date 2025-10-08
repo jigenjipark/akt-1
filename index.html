@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-  <title>スプリント骨格コーチ（動画入力・カスタムコントローラ）</title>
+  <title>スプリント骨格コーチ（動画入力・縦横対応）</title>
   <style>
-    :root { --w: 520px; }
+    :root { --w: 720px; }
     body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:#0c0f14; color:#e9eef6; }
     header { text-align:center; padding:10px 12px; }
     .wrap { max-width: var(--w); margin: 0 auto; padding: 8px 12px 24px; }
     #stage { position:relative; width:100%; aspect-ratio:9/16; background:#000; border-radius:12px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,.35); }
-    #video, #canvas { position:absolute; inset:0; width:100%; height:100%; }
-    #video { object-fit: cover; background:#000; }
-    #canvas { pointer-events:none; }
+    /* video は下層プレビュー用（ミュート＆非表示でもOK）。実描画は canvas に集約 */
+    #video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; opacity:0; } 
+    #canvas { position:absolute; inset:0; width:100%; height:100%; }
     .ctrls, .kpis { display:grid; gap:10px; margin:12px 0; }
     .row { display:flex; gap:8px; flex-wrap:wrap; }
     .btn, .sel, .chklabel, input[type=range] {
@@ -26,14 +26,13 @@
     .timebar { display:flex; align-items:center; gap:10px; }
     .timebar input[type=range]{ flex:1 1 auto; height: 30px; }
     .time { width: 95px; text-align:center; }
-    @media (max-width:560px){ :root { --w: 94vw; } }
+    @media (max-width:760px){ :root { --w: 94vw; } }
   </style>
-  <!-- TFJS / Pose Detection -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
 </head>
 <body>
-  <header><h1>スプリント骨格コーチ（動画入力・カスタムコントローラ）</h1></header>
+  <header><h1>スプリント骨格コーチ（動画入力・縦横対応）</h1></header>
   <div class="wrap">
     <!-- 上部設定 -->
     <div class="row">
@@ -45,9 +44,8 @@
       <label class="chklabel"><input type="checkbox" id="showAngles" checked> 角度ラベル</label>
     </div>
 
-    <!-- 映像＋オーバーレイ -->
+    <!-- 映像＋オーバーレイ（実描画はcanvasのみ） -->
     <div id="stage">
-      <!-- ネイティブcontrolsは使わない -->
       <video id="video" playsinline></video>
       <canvas id="canvas"></canvas>
     </div>
@@ -72,8 +70,6 @@
         </select>
         <label class="chklabel"><input type="checkbox" id="loop"> ループ</label>
       </div>
-
-      <!-- スライダー -->
       <div class="timebar">
         <span class="time mono" id="cur">00:00.00</span>
         <input type="range" id="seek" min="0" max="1000" value="0" step="1">
@@ -120,6 +116,10 @@
     let rafId = null;
     let lastModelType = null;
 
+    // 描画用スケール計算（レターボックス対応）
+    let vidW = 0, vidH = 0;
+    let drawScale = 1, offX = 0, offY = 0; // x' = offX + x*drawScale
+
     const log = (m, c) => {
       const p = document.createElement('div');
       if (c) p.style.color = c;
@@ -128,7 +128,6 @@
       console.log(m);
     };
 
-    // 時間表示
     const fmt = s => {
       if (!isFinite(s)) return '00:00.00';
       const m = Math.floor(s / 60);
@@ -136,10 +135,22 @@
       return `${String(m).padStart(2,'0')}:${r.toFixed(2).padStart(5,'0')}`;
     };
 
-    function resizeCanvasToVideo() {
-      const w = video.videoWidth || 720;
-      const h = video.videoHeight || 1280;
-      canvas.width = w; canvas.height = h;
+    function setStageAspect(w, h){
+      // ステージのaspect-ratioを動画に合わせて更新
+      const stage = document.getElementById('stage');
+      stage.style.aspectRatio = `${w} / ${h}`;
+    }
+
+    function resizeCanvasToStage(){
+      // キャンバスは要素サイズに合わせてピクセル数を更新
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.round(rect.width));
+      canvas.height = Math.max(1, Math.round(rect.height));
+      // レターボックス計算（contain）
+      const s = Math.min(canvas.width / vidW, canvas.height / vidH);
+      drawScale = s;
+      offX = (canvas.width - vidW*s) / 2;
+      offY = (canvas.height - vidH*s) / 2;
     }
 
     function angleDeg(ax,ay,bx,by,cx,cy){
@@ -163,14 +174,23 @@
     }
 
     function drawPose(kp){
-      // 背景
+      // 背景（containでレターボックス描画）
       ctx.clearRect(0,0,canvas.width,canvas.height);
-      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(video, offX, offY, vidW*drawScale, vidH*drawScale);
+
+      // キーポイント座標をキャンバス座標へ変換
+      const map={};
+      kp.forEach((p,i)=> {
+        map[i] = {
+          x: offX + p.x*drawScale,
+          y: offY + p.y*drawScale,
+          score: p.score
+        };
+      });
 
       // スケルトン
       const EDGES={'5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1};
-      const map={}; kp.forEach((p,i)=> map[i]=p);
-
       Object.keys(EDGES).forEach(e=>{
         const [i,j] = e.split(',').map(Number);
         const a=map[i], b=map[j];
@@ -178,23 +198,23 @@
         ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
         ctx.lineWidth=3; ctx.strokeStyle='#32de84'; ctx.stroke();
       });
-      kp.forEach(p=>{
+      Object.values(map).forEach(p=>{
         if(p.score<0.4) return;
         ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2);
         ctx.fillStyle='#ffae00'; ctx.fill();
       });
 
-      // 膝角度（COCO: L 11-13-15, R 12-14-16）
-      const LH=map[11], LK=map[13], LA=map[15];
-      const RH=map[12], RK=map[14], RA=map[16];
+      // 膝角度（COCO: L 11-13-15, R 12-14-16）— 角度計算は元座標系でOK
+      const LH=kp[11], LK=kp[13], LA=kp[15];
+      const RH=kp[12], RK=kp[14], RA=kp[16];
       let lk=NaN, rk=NaN;
       if(LH&&LK&&LA&&LH.score>0.4&&LK.score>0.4&&LA.score>0.4){
         lk = angleDeg(LH.x,LH.y, LK.x,LK.y, LA.x,LA.y);
-        if(showAngles.checked) drawLabel(LK.x+10, LK.y+10, `L ${lk.toFixed(1)}°`);
+        if(showAngles.checked) drawLabel(map[13].x+10, map[13].y+10, `L ${lk.toFixed(1)}°`);
       }
       if(RH&&RK&&RA&&RH.score>0.4&&RK.score>0.4&&RA.score>0.4){
         rk = angleDeg(RH.x,RH.y, RK.x,RK.y, RA.x,RA.y);
-        if(showAngles.checked) drawLabel(RK.x+10, RK.y+10, `R ${rk.toFixed(1)}°`);
+        if(showAngles.checked) drawLabel(map[14].x+10, map[14].y+10, `R ${rk.toFixed(1)}°`);
       }
       document.getElementById('lknee').textContent = isFinite(lk)? lk.toFixed(1): '–';
       document.getElementById('rknee').textContent = isFinite(rk)? rk.toFixed(1): '–';
@@ -227,35 +247,43 @@
       cur.textContent = fmt(video.currentTime);
     }
 
-    // === ファイル選択 ===
+    // ==== ファイル選択 ====
     fileEl.addEventListener('change', async (e)=>{
       const f = e.target.files && e.target.files[0];
       if (!f) return;
-      if (video.srcObject) video.srcObject = null;
       video.src = URL.createObjectURL(f);
       await new Promise(res => video.onloadedmetadata = res);
-      resizeCanvasToVideo();
+
+      // 動画サイズ取得 & ステージ更新
+      vidW = video.videoWidth || 720;
+      vidH = video.videoHeight || 1280;
+      setStageAspect(vidW, vidH);
+      resizeCanvasToStage();
+
       dur.textContent = fmt(video.duration);
       cur.textContent = fmt(0);
       seek.value = 0;
       video.loop = chkLoop.checked;
       video.playbackRate = parseFloat(selRate.value);
-      log(`動画読込: ${f.name}`, '#9ae6b4');
+      log(`動画読込: ${f.name}  (${vidW}×${vidH})`, '#9ae6b4');
+
       await ensureDetector();
       running = false; // 最初は停止状態
-      drawStaticFrame(); // 最初のフレームを描画
+      drawStaticFrame();
     });
 
+    // 画面サイズ変化に追従（縦横回転やリサイズ）
+    window.addEventListener('resize', resizeCanvasToStage);
+
     function drawStaticFrame(){
-      // 静止描画（推論も実施して1枚だけ更新）
       if (video.readyState >= 2){
         detector.estimatePoses(video).then(poses=>{
           if (poses && poses[0]) drawPose(poses[0].keypoints);
-        }).catch(()=>{ /* ignore */ });
+        }).catch(()=>{});
       }
     }
 
-    // === カスタム操作 ===
+    // ==== カスタム操作 ====
     btnPlay.addEventListener('click', ()=>{
       if (!video.src) return;
       video.playbackRate = parseFloat(selRate.value);
@@ -269,72 +297,41 @@
       video.pause();
       running = false;
       cancelAnimationFrame(rafId);
-      drawStaticFrame(); // 止めたフレームを表示維持
-    });
-
-    // フレーム長（おおよそ、30fps基準。必要なら推定fpsに変更可）
-    const FRAME = 1/30;
-
-    btnBack1f.addEventListener('click', ()=>{
-      if (!video.src) return;
-      video.pause();
-      running = false;
-      video.currentTime = Math.max(0, video.currentTime - FRAME);
-      cur.textContent = fmt(video.currentTime);
-      seek.value = Math.floor((video.currentTime / video.duration) * 1000) || 0;
-      drawStaticFrame();
-    });
-    btnFwd1f.addEventListener('click', ()=>{
-      if (!video.src) return;
-      video.pause();
-      running = false;
-      video.currentTime = Math.min(video.duration, video.currentTime + FRAME);
-      cur.textContent = fmt(video.currentTime);
-      seek.value = Math.floor((video.currentTime / video.duration) * 1000) || 0;
       drawStaticFrame();
     });
 
-    btnBack100ms.addEventListener('click', ()=>{
-      if (!video.src) return;
-      video.pause();
-      running = false;
-      video.currentTime = Math.max(0, video.currentTime - 0.1);
-      cur.textContent = fmt(video.currentTime);
-      seek.value = Math.floor((video.currentTime / video.duration) * 1000) || 0;
-      drawStaticFrame();
-    });
-    btnFwd100ms.addEventListener('click', ()=>{
-      if (!video.src) return;
-      video.pause();
-      running = false;
-      video.currentTime = Math.min(video.duration, video.currentTime + 0.1);
-      cur.textContent = fmt(video.currentTime);
-      seek.value = Math.floor((video.currentTime / video.duration) * 1000) || 0;
-      drawStaticFrame();
-    });
+    const FRAME = 1/30; // 30fps相当（必要なら調整可）
 
-    // スピード/ループ
+    function seekTo(t){
+      video.pause();
+      running = false;
+      video.currentTime = Math.max(0, Math.min(video.duration, t));
+      cur.textContent = fmt(video.currentTime);
+      seek.value = Math.floor((video.currentTime / video.duration) * 1000) || 0;
+      drawStaticFrame();
+    }
+
+    btnBack1f.addEventListener('click', ()=> seekTo(video.currentTime - FRAME));
+    btnFwd1f .addEventListener('click', ()=> seekTo(video.currentTime + FRAME));
+    btnBack100ms.addEventListener('click', ()=> seekTo(video.currentTime - 0.1));
+    btnFwd100ms .addEventListener('click', ()=> seekTo(video.currentTime + 0.1));
+
     selRate.addEventListener('change', ()=>{ video.playbackRate = parseFloat(selRate.value); });
     chkLoop.addEventListener('change', ()=>{ video.loop = chkLoop.checked; });
 
-    // スライダー
     seek.addEventListener('input', ()=>{
       if (!video.src || !isFinite(video.duration)) return;
       const t = (seek.value / 1000) * video.duration;
-      video.currentTime = t;
-      cur.textContent = fmt(t);
-      drawStaticFrame();
+      seekTo(t);
     });
 
-    // モデル切替
     selModel.addEventListener('change', async ()=>{
       if (!video.src && !video.currentSrc) return;
       await ensureDetector();
       drawStaticFrame();
     });
 
-    // 初期メッセージ
-    log('動画ファイルを選択 → 再生/一時停止/スライダー/コマ送りが使えます。', '#a5b4fc');
+    log('動画を選択 → 再生/一時停止/スライダー/コマ送りが使えます（縦横自動対応）。', '#a5b4fc');
   </script>
 </body>
 </html>
