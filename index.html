@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-  <title>スプリント骨格コーチ（動画入力版）</title>
+  <title>スプリント骨格コーチ（動画入力・一時停止対応）</title>
   <style>
     :root { --w: 480px; }
     body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:#0c0f14; color:#e9eef6; }
@@ -25,12 +25,11 @@
     #log { font-size:12px; background:#0b1220; border:1px solid #203047; padding:8px; border-radius:8px; max-height:170px; overflow:auto; }
     @media (max-width:520px){ :root { --w: 94vw; } }
   </style>
-  <!-- TFJS / Pose Detection -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
 </head>
 <body>
-  <header><h1>スプリント骨格コーチ（動画入力）</h1></header>
+  <header><h1>スプリント骨格コーチ（動画入力・一時停止対応）</h1></header>
   <div class="wrap">
     <div class="ctrls">
       <input id="file" class="btn" type="file" accept="video/*">
@@ -61,7 +60,6 @@
   </div>
 
   <script>
-    // === DOM ===
     const fileEl = document.getElementById('file');
     const selModel = document.getElementById('selModel');
     const showAngles = document.getElementById('showAngles');
@@ -72,13 +70,11 @@
     const rkneeEl = document.getElementById('rknee');
     const logEl = document.getElementById('log');
 
-    // === State ===
     let detector = null;
     let running = false;
     let rafId = null;
     let lastModelType = null;
 
-    // === Utils ===
     const log = (m, c) => {
       const p = document.createElement('div');
       if (c) p.style.color = c;
@@ -115,112 +111,98 @@
     }
 
     function drawPose(kp){
-      // 背景（動画フレーム）
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.drawImage(video,0,0,canvas.width,canvas.height);
-
-      // スケルトン
-      const EDGES = {'5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1};
-      const map={}; kp.forEach((p,i)=> map[i]=p);
-
-      // 線
+      const EDGES={'5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1};
+      const map={}; kp.forEach((p,i)=>map[i]=p);
       Object.keys(EDGES).forEach(e=>{
-        const [i,j] = e.split(',').map(Number);
-        const a=map[i], b=map[j];
-        if(!a||!b||a.score<0.4||b.score<0.4) return;
-        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
-        ctx.lineWidth=3; ctx.strokeStyle='#32de84'; ctx.stroke();
+        const [i,j]=e.split(',').map(Number);
+        const a=map[i],b=map[j];
+        if(!a||!b||a.score<0.4||b.score<0.4)return;
+        ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);
+        ctx.lineWidth=3;ctx.strokeStyle='#32de84';ctx.stroke();
       });
-      // 点
       kp.forEach(p=>{
-        if(p.score<0.4) return;
-        ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2);
-        ctx.fillStyle='#ffae00'; ctx.fill();
+        if(p.score<0.4)return;
+        ctx.beginPath();ctx.arc(p.x,p.y,3,0,Math.PI*2);
+        ctx.fillStyle='#ffae00';ctx.fill();
       });
 
-      // 膝角度（COCO: L 11-13-15, R 12-14-16）
-      const LH=map[11], LK=map[13], LA=map[15];
-      const RH=map[12], RK=map[14], RA=map[16];
-      let lk=NaN, rk=NaN;
+      const LH=map[11],LK=map[13],LA=map[15];
+      const RH=map[12],RK=map[14],RA=map[16];
+      let lk=NaN,rk=NaN;
       if(LH&&LK&&LA&&LH.score>0.4&&LK.score>0.4&&LA.score>0.4){
-        lk = angleDeg(LH.x,LH.y, LK.x,LK.y, LA.x,LA.y);
-        if(showAngles.checked) drawLabel(LK.x+10, LK.y+10, `L ${lk.toFixed(1)}°`);
+        lk=angleDeg(LH.x,LH.y,LK.x,LK.y,LA.x,LA.y);
+        if(showAngles.checked)drawLabel(LK.x+10,LK.y+10,`L ${lk.toFixed(1)}°`);
       }
       if(RH&&RK&&RA&&RH.score>0.4&&RK.score>0.4&&RA.score>0.4){
-        rk = angleDeg(RH.x,RH.y, RK.x,RK.y, RA.x,RA.y);
-        if(showAngles.checked) drawLabel(RK.x+10, RK.y+10, `R ${rk.toFixed(1)}°`);
+        rk=angleDeg(RH.x,RH.y,RK.x,RK.y,RA.x,RA.y);
+        if(showAngles.checked)drawLabel(RK.x+10,RK.y+10,`R ${rk.toFixed(1)}°`);
       }
-      lkneeEl.textContent = isFinite(lk)? lk.toFixed(1): '–';
-      rkneeEl.textContent = isFinite(rk)? rk.toFixed(1): '–';
+      lkneeEl.textContent=isFinite(lk)?lk.toFixed(1):'–';
+      rkneeEl.textContent=isFinite(rk)?rk.toFixed(1):'–';
     }
 
     async function ensureDetector(){
-      const type = selModel.value;
-      if (detector && lastModelType === type) return;
-      if (detector) await detector.dispose();
-      detector = await poseDetection.createDetector(
+      const type=selModel.value;
+      if(detector&&lastModelType===type)return;
+      if(detector)await detector.dispose();
+      detector=await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
-        { modelType: poseDetection.movenet.modelType[type] }
+        {modelType:poseDetection.movenet.modelType[type]}
       );
-      lastModelType = type;
-      log(`MoveNetロード: ${type}`, 'lime');
+      lastModelType=type;
+      log(`MoveNetロード: ${type}`,'lime');
     }
 
     async function loop(){
-      if (!running) return;
-      rafId = requestAnimationFrame(loop);
-      if (video.paused || video.ended || video.readyState < 2) return;
+      if(!running)return;
+      rafId=requestAnimationFrame(loop);
+      if(video.paused||video.ended||video.readyState<2)return;
       try{
-        const poses = await detector.estimatePoses(video);
-        if (poses && poses[0]) drawPose(poses[0].keypoints);
-      }catch(e){
-        log(`推論エラー: ${e.message}`, 'tomato');
-      }
+        const poses=await detector.estimatePoses(video);
+        if(poses&&poses[0])drawPose(poses[0].keypoints);
+      }catch(e){log(`推論エラー:${e.message}`,'tomato');}
     }
 
-    // === Events ===
-    fileEl.addEventListener('change', async (e)=>{
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      // ローカルURLに差し替え
-      if (video.srcObject) video.srcObject = null;
-      video.src = URL.createObjectURL(f);
+    fileEl.addEventListener('change',async(e)=>{
+      const f=e.target.files&&e.target.files[0];
+      if(!f)return;
+      if(video.srcObject)video.srcObject=null;
+      video.src=URL.createObjectURL(f);
       video.load();
-      await new Promise(res => video.onloadedmetadata = res);
+      await new Promise(res=>video.onloadedmetadata=res);
       resizeCanvasToVideo();
-      log(`動画読込: ${f.name} (${Math.round(video.duration)}s)`, '#9ae6b4');
-
+      log(`動画読込: ${f.name}`,'#9ae6b4');
       await ensureDetector();
-      running = true;
-      if (!video.paused) video.pause(); // ユーザーが任意タイミングで再生
-      log('準備完了：再生ボタンで解析開始', '#93c5fd');
+      running=true;
+      log('準備完了：再生ボタンで解析開始','#93c5fd');
     });
 
-    // 再生/一時停止でループ制御
-    video.addEventListener('play', ()=>{
+    video.addEventListener('play',()=>{
       resizeCanvasToVideo();
-      if (!running) running = true;
+      running=true;
       cancelAnimationFrame(rafId);
       loop();
-      log('再生開始', '#c7f9cc');
+      log('再生開始','#c7f9cc');
     });
-    video.addEventListener('pause', ()=> {
-      log('一時停止', '#fde68a');
-    });
-    video.addEventListener('ended', ()=> {
-      running = false;
+    video.addEventListener('pause',()=>{
       cancelAnimationFrame(rafId);
-      log('再生終了', '#fca5a5');
+      running=false;
+      log('一時停止','#fde68a');
+    });
+    video.addEventListener('ended',()=>{
+      running=false;
+      cancelAnimationFrame(rafId);
+      log('再生終了','#fca5a5');
     });
 
-    // モデル切替
-    selModel.addEventListener('change', async ()=>{
-      if (!video.src && !video.currentSrc) return;
+    selModel.addEventListener('change',async()=>{
+      if(!video.src&&!video.currentSrc)return;
       await ensureDetector();
     });
 
-    // 初期メッセージ
-    log('動画ファイルを選択してください（MP4 など）', '#a5b4fc');
+    log('動画ファイルを選択してください（MP4など）','#a5b4fc');
   </script>
 </body>
 </html>
