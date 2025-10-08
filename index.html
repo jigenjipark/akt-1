@@ -3,14 +3,18 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-  <title>スプリント骨格コーチ（縦撮り・背面固定）</title>
+  <title>スプリント骨格コーチ（縦撮り・角度ラベル付き）</title>
   <style>
     body { margin: 0; font-family: system-ui, sans-serif; background:#0c0f14; color:#e9eef6; }
     header { text-align:center; padding:8px; }
     #stage { position:relative; width:100%; max-width:480px; aspect-ratio:9/16; margin:0 auto; background:#000; }
     #video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }
     #canvas { position:absolute; inset:0; width:100%; height:100%; }
-    button { margin:8px; padding:12px 20px; font-size:16px; border-radius:8px; border:none; background:#1e293b; color:white; }
+    .ctrls { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; padding:8px; }
+    button, label { padding:10px 14px; font-size:15px; border-radius:8px; border:none; background:#1e293b; color:white; }
+    input[type=checkbox] { transform: scale(1.2); vertical-align: middle; margin-right:6px; }
+    .kpi { display:flex; justify-content:center; gap:16px; padding:6px; font-weight:700; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     #log { font-size:12px; font-family:monospace; background:#111; padding:8px; max-width:480px; margin:10px auto; border-radius:8px; max-height:200px; overflow:auto; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0/dist/tf.min.js"></script>
@@ -22,62 +26,131 @@
     <video id="video" autoplay playsinline muted webkit-playsinline></video>
     <canvas id="canvas"></canvas>
   </div>
-  <div style="text-align:center;">
+  <div class="ctrls">
     <button id="btnStart">カメラ開始</button>
     <button id="btnRetry">再試行</button>
+    <label><input type="checkbox" id="showAngles" checked>映像上に角度表示</label>
+  </div>
+  <div class="kpi mono">
+    <div>左膝: <span id="lknee">–</span>°</div>
+    <div>右膝: <span id="rknee">–</span>°</div>
   </div>
   <div id="log"></div>
+
   <script>
     const video=document.getElementById('video');
     const canvas=document.getElementById('canvas');
     const ctx=canvas.getContext('2d');
     const logEl=document.getElementById('log');
-    let detector=null,stream=null,running=false;
+    const lkneeEl=document.getElementById('lknee');
+    const rkneeEl=document.getElementById('rknee');
+    const showAngles=document.getElementById('showAngles');
 
-    function log(msg,color){const p=document.createElement('div');if(color)p.style.color=color;p.textContent=msg;logEl.prepend(p);}
+    let detector=null, stream=null, running=false;
+
+    function log(m,color){const p=document.createElement('div');if(color)p.style.color=color;p.textContent=m;logEl.prepend(p);}
 
     async function initCamera(){
       try{
         stream=await navigator.mediaDevices.getUserMedia({
           audio:false,
-          video:{width:{ideal:720},height:{ideal:1280},aspectRatio:{ideal:9/16},facingMode:{exact:'environment'}}
+          video:{
+            width:{ideal:720}, height:{ideal:1280}, aspectRatio:{ideal:9/16},
+            facingMode:{ exact:'environment' } // 背面固定
+          }
         });
-        video.srcObject=stream;await video.play();
-        await new Promise(r=>video.onloadedmetadata=r);
-        resizeCanvas();log('カメラ起動OK','lime');
-      }catch(e){log('カメラ起動失敗:'+e.message,'red');}
+        video.srcObject=stream; await video.play();
+        await new Promise(r=> video.onloadedmetadata=r);
+        resizeCanvas();
+        log('カメラ起動OK','lime');
+      }catch(e){ log('カメラ起動失敗:'+e.message,'red'); }
     }
-    function resizeCanvas(){canvas.width=video.videoWidth||720;canvas.height=video.videoHeight||1280;}
-    window.addEventListener('orientationchange',()=>setTimeout(resizeCanvas,300));
+
+    function resizeCanvas(){
+      canvas.width = video.videoWidth || 720;
+      canvas.height = video.videoHeight || 1280;
+    }
+    window.addEventListener('orientationchange', ()=> setTimeout(resizeCanvas, 300));
+
+    function angleDeg(ax,ay,bx,by,cx,cy){
+      const v1x=ax-bx, v1y=ay-by;
+      const v2x=cx-bx, v2y=cy-by;
+      const n1=Math.hypot(v1x,v1y), n2=Math.hypot(v2x,v2y);
+      if(!n1 || !n2) return NaN;
+      let cos=(v1x*v2x+v1y*v2y)/(n1*n2);
+      cos=Math.max(-1,Math.min(1,cos));
+      return Math.acos(cos)*180/Math.PI;
+    }
 
     async function startDetector(){
       try{
-        detector=await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,{modelType:poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING});
+        detector=await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        );
         log('MoveNetロードOK','lime');
-      }catch(e){log('MoveNetロード失敗:'+e.message,'red');return;}
+      }catch(e){ log('MoveNetロード失敗:'+e.message,'red'); return; }
+
       running=true;
       const loop=async()=>{
-        if(!running)return;requestAnimationFrame(loop);
-        if(video.readyState<2)return;
+        if(!running) return;
+        requestAnimationFrame(loop);
+        if(video.readyState<2) return;
         const poses=await detector.estimatePoses(video);
-        if(poses&&poses[0])drawPose(poses[0].keypoints);
+        if(poses && poses[0]) drawPose(poses[0].keypoints);
       };
       loop();
     }
 
     function drawPose(kp){
+      // COCO順(MoveNet): 11=leftHip,12=rightHip,13=leftKnee,14=rightKnee,15=leftAnkle,16=rightAnkle
+      const map={}; kp.forEach((p,i)=> map[i]=p);
+
       ctx.clearRect(0,0,canvas.width,canvas.height);
       ctx.drawImage(video,0,0,canvas.width,canvas.height);
-      const map={};kp.forEach((p,i)=>map[i]=p);
-      const edges={'5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1};
-      for(const e in edges){const [i,j]=e.split(',').map(Number);const a=map[i],b=map[j];
-        if(a&&b&&a.score>0.4&&b.score>0.4){ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.lineWidth=3;ctx.strokeStyle='#00ff99';ctx.stroke();}}
-      kp.forEach(p=>{if(p.score>0.4){ctx.beginPath();ctx.arc(p.x,p.y,3,0,Math.PI*2);ctx.fillStyle='#ffae00';ctx.fill();}});
+
+      // 骨格線
+      const EDGES={'5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1};
+      for(const e in EDGES){
+        const [i,j]=e.split(',').map(Number);
+        const a=map[i], b=map[j];
+        if(a&&b&&a.score>0.4&&b.score>0.4){
+          ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+          ctx.lineWidth=3; ctx.strokeStyle='#00ff99'; ctx.stroke();
+        }
+      }
+      // 関節点
+      kp.forEach(p=>{ if(p.score>0.4){ ctx.beginPath(); ctx.arc(p.x,p.y,3,0,Math.PI*2); ctx.fillStyle='#ffae00'; ctx.fill(); }});
+
+      // 膝角度
+      const LH=map[11], LK=map[13], LA=map[15];
+      const RH=map[12], RK=map[14], RA=map[16];
+      let lk=NaN, rk=NaN;
+      if(LH&&LK&&LA&&LH.score>0.4&&LK.score>0.4&&LA.score>0.4){
+        lk = angleDeg(LH.x,LH.y, LK.x,LK.y, LA.x,LA.y);
+        if(showAngles.checked) drawLabel(LK.x+10, LK.y+10, `L ${lk.toFixed(1)}°`);
+      }
+      if(RH&&RK&&RA&&RH.score>0.4&&RK.score>0.4&&RA.score>0.4){
+        rk = angleDeg(RH.x,RH.y, RK.x,RK.y, RA.x,RA.y);
+        if(showAngles.checked) drawLabel(RK.x+10, RK.y+10, `R ${rk.toFixed(1)}°`);
+      }
+      lkneeEl.textContent = isFinite(lk)? lk.toFixed(1): '–';
+      rkneeEl.textContent = isFinite(rk)? rk.toFixed(1): '–';
     }
 
-    async function startAll(){await initCamera();await startDetector();}
-    document.getElementById('btnStart').onclick=startAll;
-    document.getElementById('btnRetry').onclick=()=>{running=false;if(stream)stream.getTracks().forEach(t=>t.stop());startAll();};
+    function drawLabel(x,y,text){
+      ctx.font='16px system-ui';
+      ctx.textBaseline='top';
+      const w=ctx.measureText(text).width+8;
+      ctx.fillStyle='rgba(0,0,0,0.55)';
+      ctx.fillRect(x-2,y-2,w,22);
+      ctx.fillStyle='#ffffff';
+      ctx.fillText(text,x,y);
+    }
+
+    async function startAll(){ await initCamera(); await startDetector(); }
+    document.getElementById('btnStart').onclick = startAll;
+    document.getElementById('btnRetry').onclick = ()=>{ running=false; if(stream) stream.getTracks().forEach(t=>t.stop()); startAll(); };
   </script>
 </body>
 </html>
