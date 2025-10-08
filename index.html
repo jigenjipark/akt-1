@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
+  <title>スプリント骨格コーチ（現場用）</title>
+  <style>
+    :root { --gap: 10px; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; background:#0c0f14; color:#e9eef6; }
+    header { padding: 12px 16px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid #233; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    main { padding: 12px; display:grid; gap: var(--gap); }
+    #stage { position: relative; width: 100%; max-width: 900px; margin: 0 auto; background: #111; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+    #video { position:absolute; inset:0; width:100%; height:100%; object-fit: cover; transform: scaleX(-1); } /* ミラー表示 */
+    #canvas { position:absolute; inset:0; width:100%; height:100%; }
+    .toolbar { display:grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); max-width:900px; margin:0 auto; }
+    button, select { width:100%; padding: 12px; border-radius: 12px; border: 1px solid #2a3442; background:#131a22; color:#e9eef6; font-size: 15px; }
+    button:active { transform: scale(0.98); }
+    .row { display:grid; gap: var(--gap); max-width:900px; margin:0 auto; grid-template-columns: 1fr 1fr; }
+    .row > div { background:#0f141b; border:1px solid #223042; border-radius:12px; padding:12px; }
+    .kpi { display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+    .kpi .val { font-size: 22px; font-weight:700; }
+    .muted { opacity: .7; }
+    footer { padding: 16px; text-align:center; opacity:.7; font-size:12px; }
+    .chip { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:#17202a; border:1px solid #2a3442; }
+    .grid-4 { display:grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
+    .grid-2 { display:grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap); }
+    #flash { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); background:#10b981; color:#031; padding:8px 14px; border-radius:999px; display:none; font-weight:700; }
+    @media (max-width: 720px) {
+      .row { grid-template-columns: 1fr; }
+      .toolbar { grid-template-columns: repeat(2, 1fr); }
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.14.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+</head>
+<body>
+  <div id="flash"></div>
+  <header>
+    <h1>スプリント骨格コーチ（現場用）</h1>
+    <div class="chip"><span id="statusDot" style="width:10px;height:10px;border-radius:50%;background:#f59e0b;display:inline-block;"></span><span id="status">起動中</span></div>
+  </header>
+
+  <main>
+    <div id="stage">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="toolbar">
+      <button id="btnStart">▶ 計測開始</button>
+      <button id="btnRep">🏷️ レップ追加</button>
+      <button id="btnStop">⏹ 停止/保存</button>
+    </div>
+
+    <div style="max-width:900px;margin:4px auto 0;display:flex;gap:10px;align-items:center;">
+      <label class="chip" style="cursor:pointer;">
+        <input type="checkbox" id="cbAngleOverlay" checked style="accent-color:#10b981;margin-right:6px;"> 映像上に角度テキスト表示
+      </label>
+    </div>
+
+    <div class="row">
+      <div>
+        <div class="kpi">
+          <div>FPS: <span class="val" id="fps">–</span></div>
+          <div class="muted">推論: <span id="modelName">MoveNet(Lightning)</span></div>
+        </div>
+        <div class="grid-4" style="margin-top:8px;">
+          <div>左膝(°) <div class="val" id="lknee">–</div></div>
+          <div>右膝(°) <div class="val" id="rknee">–</div></div>
+          <div>ピッチ(推定) <div class="val" id="pitch">–</div></div>
+          <div>レップ数 <div class="val" id="repCount">0</div></div>
+        </div>
+      </div>
+      <div>
+        <div class="grid-2">
+          <button id="btnFlip">↔ カメラ反転</button>
+          <select id="selCam"></select>
+          <select id="selModel">
+            <option value="SINGLEPOSE_LIGHTNING">MoveNet Lightning(高速)</option>
+            <option value="SINGLEPOSE_THUNDER">MoveNet Thunder(高精度)</option>
+          </select>
+          <select id="selSmoothing">
+            <option value="0">スムージングなし</option>
+            <option value="3">3フレーム移動平均</option>
+            <option value="5">5フレーム移動平均</option>
+          </select>
+        </div>
+        <div class="grid-2" style="margin-top:10px;">
+          <button id="btnCSV">CSVエクスポート</button>
+          <button id="btnPNG">スクショ保存</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <details>
+        <summary>CSV列の説明（タップで展開）</summary>
+        <p>timestamp(ms), lknee_deg, rknee_deg, rep_idx</p>
+        <p>※ピッチは膝角の周期から推定（参考値）。</p>
+      </details>
+    </div>
+  </main>
+
+  <footer>撮影は横から固定・できれば120fps / シャッター1/1000s推奨</footer>
+
+  <script>
+    const flash = (msg, ok=true) => {
+      const el = document.getElementById('flash');
+      el.textContent = msg;
+      el.style.background = ok ? '#10b981' : '#ef4444';
+      el.style.display = 'block';
+      setTimeout(()=> el.style.display='none', 1400);
+    };
+
+    const statusDot = document.getElementById('statusDot');
+    const setStatus = (txt, color='#f59e0b') => {
+      document.getElementById('status').textContent = txt;
+      statusDot.style.background = color;
+    };
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    let detector = null;
+    let animId = null;
+    let running = false;
+    let mirrored = true;
+    let smoothingN = 0;
+    const lkneeEl = document.getElementById('lknee');
+    const rkneeEl = document.getElementById('rknee');
+    const pitchEl = document.getElementById('pitch');
+    const fpsEl = document.getElementById('fps');
+    const repCountEl = document.getElementById('repCount');
+
+    const pointsBuf = []; // for smoothing
+    const angles = []; // for pitch estimate
+    let lastTs = performance.now();
+    let fpsAvg = 0;
+    let repIdx = 0;
+    const csvRows = [["timestamp_ms","lknee_deg","rknee_deg","rep_idx"]];
+
+    const EDGES = { '5,7':1,'7,9':1,'6,8':1,'8,10':1,'5,6':1,'5,11':1,'6,12':1,'11,12':1,'11,13':1,'13,15':1,'12,14':1,'14,16':1 };
+
+    function angle3(a,b,c){
+      const v1=[a.x-b.x,a.y-b.y], v2=[c.x-b.x,c.y-b.y];
+      const n1=Math.hypot(...v1), n2=Math.hypot(...v2);
+      if(!n1 || !n2) return NaN;
+      let cos=(v1[0]*v2[0]+v1[1]*v2[1])/(n1*n2);
+      cos=Math.max(-1,Math.min(1,cos));
+      return (Math.acos(cos)*180/Math.PI);
+    }
+
+    function drawSkeleton(kp){
+      // points
+      kp.forEach(p=>{
+        if(p.score<0.4) return;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+        ctx.fillStyle = '#ffae00'; ctx.fill();
+      });
+      // lines
+      const map={}; kp.forEach((p,i)=> map[i]=p);
+      Object.keys(EDGES).forEach(e=>{
+        const [i,j]=e.split(',').map(n=>parseInt(n));
+        const a=map[i], b=map[j];
+        if(!a||!b||a.score<0.4||b.score<0.4) return;
+        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y);
+        ctx.lineWidth=3; ctx.strokeStyle='#32de84'; ctx.stroke();
+      });
+    }
+
+    function drawAngleLabel(text, x, y){
+      const pad=4;
+      ctx.font = '16px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      ctx.textBaseline = 'top';
+      const metrics = ctx.measureText(text);
+      const w = metrics.width + pad*2;
+      const h = 20 + pad*2;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.strokeRect(x, y, w, h);
+      ctx.fillStyle = '#e9eef6';
+      ctx.fillText(text, x+pad, y+pad);
+    }
+
+    function smooth(kp){
+      if(!smoothingN) return kp;
+      pointsBuf.push(kp.map(p=>({x:p.x,y:p.y,score:p.score})));
+      if(pointsBuf.length> smoothingN) pointsBuf.shift();
+      const out = kp.map((p,i)=>{
+        let sx=0,sy=0,sc=0;
+        for(const arr of pointsBuf){ sx+=arr[i].x; sy+=arr[i].y; sc+=arr[i].score; }
+        return { x:sx/pointsBuf.length, y:sy/pointsBuf.length, score: sc/pointsBuf.length };
+      });
+      return out;
+    }
+
+    function estimatePitchFromKneeSeries(arr, fps){
+      if(arr.length<20 || fps<10) return NaN;
+      const mean=arr.reduce((a,b)=>a+b,0)/arr.length;
+      const s=arr.map(v=>v-mean);
+      let bestLag=0, best=0;
+      const maxLag=Math.min(Math.floor(fps*1.2), s.length-1);
+      for(let lag=6; lag<=maxLag; lag++){
+        let num=0, den=0;
+        for(let i=lag;i<s.length;i++){ num+= s[i]*s[i-lag]; }
+        for(let i=0;i<s.length;i++){ den+= s[i]*s[i]; }
+        const r = den? num/den : 0;
+        if(r>best){ best=r; bestLag=lag; }
+      }
+      if(bestLag===0) return NaN;
+      const periodSec = bestLag / fps;
+      return 1/periodSec; // Hz
+    }
+
+    async function initCamera(deviceId){
+      const constraints = {
+        audio: false,
+        video: {
+          deviceId: deviceId? {exact: deviceId}: undefined,
+          facingMode: 'environment',
+          width: { ideal: 1280 }, height: { ideal: 720 }
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = stream;
+      await video.play();
+      resizeCanvas();
+      return stream;
+    }
+
+    function resizeCanvas(){
+      canvas.width = video.videoWidth || 1280;
+      canvas.height = video.videoHeight || 720;
+    }
+
+    async function listCams(){
+      const sel = document.getElementById('selCam');
+      sel.innerHTML='';
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d=> d.kind==='videoinput');
+      cams.forEach((c,i)=>{
+        const op = document.createElement('option');
+        op.value = c.deviceId;
+        op.textContent = c.label || `Camera ${i+1}`;
+        sel.appendChild(op);
+      });
+    }
+
+    async function createDetector(modelType){
+      if(detector) await detector.dispose();
+      detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet,
+        { modelType: poseDetection.movenet.modelType[modelType] }
+      );
+      document.getElementById('modelName').textContent = `MoveNet(${modelType.includes('THUNDER')?'Thunder':'Lightning'})`;
+    }
+
+    function drawHUD(lk, rk, fps){
+      lkneeEl.textContent = isFinite(lk)? lk.toFixed(1): '–';
+      rkneeEl.textContent = isFinite(rk)? rk.toFixed(1): '–';
+      fpsEl.textContent = fps.toFixed(1);
+    }
+
+    async function renderLoop(){
+      if(!running) return;
+      animId = requestAnimationFrame(renderLoop);
+      if(video.readyState<2) return;
+      resizeCanvas();
+
+      ctx.save();
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      // video
+      ctx.save();
+      if(mirrored){ ctx.translate(canvas.width,0); ctx.scale(-1,1); }
+      ctx.drawImage(video, 0,0, canvas.width, canvas.height);
+      ctx.restore();
+
+      const t0 = performance.now();
+      const poses = await detector.estimatePoses(video, {flipHorizontal: mirrored});
+      const t1 = performance.now();
+      const dt = t1 - lastTs; lastTs = t1;
+      const fps = dt>0 ? 1000/dt : 0;
+      fpsAvg = fpsAvg*0.8 + fps*0.2;
+
+      if(poses && poses[0] && poses[0].keypoints){
+        let kp = poses[0].keypoints.map(k=>({x:k.x, y:k.y, score:k.score}));
+        kp = smooth(kp);
+        drawSkeleton(kp);
+
+        // indices: 23:RHip 25:RKnee 27:RAnkle, 24:LHip 26:LKnee 28:LAnkle
+        const lk = angle3(kp[24], kp[26], kp[28]);
+        const rk = angle3(kp[23], kp[25], kp[27]);
+        drawHUD(lk, rk, fpsAvg);
+
+        // On-canvas angle labels near knees
+        const showOverlay = document.getElementById('cbAngleOverlay')?.checked;
+        if(showOverlay){
+          const lknee = kp[26], rknee = kp[25];
+          if(isFinite(lk) && lknee && lknee.score>0.4){
+            drawAngleLabel(`L ${lk.toFixed(1)}°`, lknee.x + 10, lknee.y + 10);
+          }
+          if(isFinite(rk) && rknee && rknee.score>0.4){
+            drawAngleLabel(`R ${rk.toFixed(1)}°`, rknee.x + 10, rknee.y + 10);
+          }
+        }
+
+        // series for pitch estimate (use right knee as default)
+        if(isFinite(rk)) angles.push(rk);
+        const pitchHz = estimatePitchFromKneeSeries(angles.slice(-180), Math.min(60, Math.max(10, fpsAvg))); // last ~3s
+        if(isFinite(pitchHz)) pitchEl.textContent = (pitchHz).toFixed(2) + ' Hz';
+
+        // log CSV row
+        const ts = Date.now();
+        const row = [ts, isFinite(lk)? lk.toFixed(3):'', isFinite(rk)? rk.toFixed(3):'', repIdx];
+        csvRows.push(row);
+      }
+
+      ctx.restore();
+    }
+
+    async function start(){
+      try{
+        running = true;
+        lastTs = performance.now();
+        angles.length = 0;
+        csvRows.length = 1; csvRows.push(["# session_start", new Date().toISOString()]);
+        repIdx = 0; repCountEl.textContent = '0';
+        await renderLoop();
+        setStatus('計測中', '#10b981');
+      }catch(e){
+        console.error(e); flash('開始に失敗: 権限やカメラ設定を確認', false); setStatus('エラー', '#ef4444');
+      }
+    }
+
+    function stop(){
+      running = false;
+      if(animId) cancelAnimationFrame(animId);
+      setStatus('停止', '#f59e0b');
+      flash('停止しました');
+    }
+
+    function toCSV(){
+      const text = csvRows.map(r=> r.join(',')).join('\\n');
+      const blob = new Blob([text], {type:'text/csv'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `sprint_session_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`;
+      a.click();
+    }
+
+    function screenshot(){
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `frame_${new Date().toISOString().replace(/[:.]/g,'-')}.png`;
+      a.click();
+    }
+
+    // UI events
+    document.getElementById('btnStart').onclick = start;
+    document.getElementById('btnStop').onclick = stop;
+    document.getElementById('btnCSV').onclick = toCSV;
+    document.getElementById('btnPNG').onclick = screenshot;
+    document.getElementById('btnRep').onclick = ()=>{
+      repIdx++; repCountEl.textContent = String(repIdx);
+      csvRows.push(["# rep", repIdx, new Date().toISOString()]);
+      flash(`レップ ${repIdx}`, true);
+    };
+    document.getElementById('btnFlip').onclick = ()=>{
+      mirrored = !mirrored;
+      flash(mirrored? 'ミラーON':'ミラーOFF', true);
+    };
+    document.getElementById('selSmoothing').onchange = (e)=>{
+      smoothingN = parseInt(e.target.value||'0',10)||0;
+      pointsBuf.length = 0; // reset buffer
+      flash(`スムージング: ${smoothingN? smoothingN+'f':'なし'}`, true);
+    };
+    document.getElementById('selModel').onchange = async(e)=>{
+      await createDetector(e.target.value);
+      flash('モデル切替完了', true);
+    };
+
+    // init
+    (async function(){
+      try{
+        await listCams();
+        await initCamera();
+        await createDetector('SINGLEPOSE_LIGHTNING');
+        setStatus('準備OK', '#10b981');
+      }catch(e){
+        console.error(e); setStatus('カメラ起動失敗', '#ef4444');
+      }
+    })();
+  </script>
+</body>
+</html>
