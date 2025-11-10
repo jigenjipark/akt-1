@@ -169,8 +169,11 @@
 
       if(L.H&&L.K&&L.A) vals.lknee=angleDeg(L.H.x,L.H.y,L.K.x,L.K.y,L.A.x,L.A.y);
       if(R.H&&R.K&&R.A) vals.rknee=angleDeg(R.H.x,R.H.y,R.K.x,R.K.y,R.A.x,R.A.y);
-      if(L.S&&L.E&&L.W) vals.lelbow=angleDeg(L.S.x,L.S.y,L.E.x,L.E.y,L.W.x,L.W.y);
-      if(R.S&&R.E&&R.W) vals.relbow=angleDeg(R.S.x,R.S.y,R.E.x,R.E.y,R.W.x,R.W.y);
+// --- 足首角度（13-15-11 / 14-16-12）に変更 ---
+if (L.K && L.A && L.H)
+  vals.lankle = angleDeg(L.K.x, L.K.y, L.A.x, L.A.y, L.H.x, L.H.y);
+if (R.K && R.A && R.H)
+  vals.rankle = angleDeg(R.K.x, R.K.y, R.A.x, R.A.y, R.H.x, R.H.y);
       if(L.S&&L.H&&L.K) vals.lhip=angleDeg(L.S.x,L.S.y,L.H.x,L.H.y,L.K.x,L.K.y);
       if(R.S&&R.H&&R.K) vals.rhip=angleDeg(R.S.x,R.S.y,R.H.x,R.H.y,R.K.x,R.K.y);
       if(L.K&&L.A&&L.T) vals.lankle=angleDeg(L.K.x,L.K.y,L.A.x,L.A.y,L.T.x,L.T.y);
