@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-<title>AKT骨格分析アプリ</title>
+<title>スプリント骨格コーチ BlazePose版（縦横対応＋スケルトン表示）</title>
 <style>
 :root { --w: 720px; }
 body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:#0c0f14; color:#e9eef6; }
@@ -30,7 +30,7 @@ header { text-align:center; padding:10px; }
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10"></script>
 </head>
 <body>
-<header><h1>AKT骨格分析アプリ</h1></header>
+<header><h1>スプリント骨格コーチ BlazePose版（縦横対応＋スケルトン表示）</h1></header>
 <div class="wrap">
   <div class="row">
     <input id="file" class="btn" type="file" accept="video/*">
@@ -87,7 +87,6 @@ const ctx=canvas.getContext('2d'), showAngles=document.getElementById('showAngle
 const selRate=document.getElementById('selRate'), chkLoop=document.getElementById('loop'), seek=document.getElementById('seek');
 const cur=document.getElementById('cur'), dur=document.getElementById('dur'), logEl=document.getElementById('log');
 const angleEls={lknee:lknee,rknee:rknee,lelbow:lelbow,relbow:relbow,lhip:lhip,rhip:rhip,lankle:lankle,rankle:rankle};
-
 let landmarker=null,running=false,rafId=null,vidW=0,vidH=0,scale=1,offX=0,offY=0;
 const FRAME=1/30,colors={knee:'#32de84',elbow:'#00bfff',hip:'#ba55d3',ankle:'#ffa500'};
 
@@ -126,6 +125,15 @@ window.addEventListener('resize',resizeCanvasToVideo);
 
 function transform(x,y){return [offX+x*scale, offY+y*scale];}
 
+function drawSkeleton(map,edges){
+  ctx.lineWidth=3; ctx.strokeStyle="#32de84";
+  for(const [a,b] of edges){
+    const p1=map[a],p2=map[b];
+    if(!p1||!p2)continue;
+    ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+  }
+}
+
 async function drawFrame(){
   if(!landmarker||!video||video.readyState<2)return;
   const res=await landmarker.detectForVideo(video,performance.now());
@@ -133,8 +141,24 @@ async function drawFrame(){
   const kp=res.landmarks[0]; ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle="#000";ctx.fillRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video,offX,offY,vidW*scale,vidH*scale);
-  const g=i=>{const [x,y]=transform(kp[i].x*vidW,kp[i].y*vidH);return{x,y};};
 
+  // 変換済み座標をmap化
+  const map={};
+  for(let i=0;i<kp.length;i++){
+    const [x,y]=transform(kp[i].x*vidW,kp[i].y*vidH);
+    map[i]={x,y};
+  }
+
+  // --- 骨格ライン（主要部位） ---
+  const EDGES=[
+    [11,13],[13,15],[12,14],[14,16],[11,12],
+    [23,24],[23,25],[24,26],[25,27],[26,28],[27,29],[28,30],[27,31],[28,32],
+    [11,23],[12,24]
+  ];
+  drawSkeleton(map,EDGES);
+
+  // --- 角度算出 ---
+  const g=i=>map[i];
   const L={S:12,E:14,W:16,H:24,K:26,A:28,T:32};
   const R={S:11,E:13,W:15,H:23,K:25,A:27,T:31};
   const vals={};
@@ -148,14 +172,15 @@ async function drawFrame(){
   vals.rankle=angleDeg(g(R.K).x,g(R.K).y,g(R.A).x,g(R.A).y,g(R.T).x,g(R.T).y);
 
   if(showAngles.checked){
-    if(isFinite(vals.lknee))drawLabel(g(L.K).x+10,g(L.K).y+10,`L Knee ${vals.lknee.toFixed(1)}°`,colors.knee);
-    if(isFinite(vals.rknee))drawLabel(g(R.K).x+10,g(R.K).y+10,`R Knee ${vals.rknee.toFixed(1)}°`,colors.knee);
-    if(isFinite(vals.lelbow))drawLabel(g(L.E).x+10,g(L.E).y+10,`L Elbow ${vals.lelbow.toFixed(1)}°`,colors.elbow);
-    if(isFinite(vals.relbow))drawLabel(g(R.E).x+10,g(R.E).y+10,`R Elbow ${vals.relbow.toFixed(1)}°`,colors.elbow);
-    if(isFinite(vals.lhip))drawLabel(g(L.H).x+10,g(L.H).y+10,`L Hip ${vals.lhip.toFixed(1)}°`,colors.hip);
-    if(isFinite(vals.rhip))drawLabel(g(R.H).x+10,g(R.H).y+10,`R Hip ${vals.rhip.toFixed(1)}°`,colors.hip);
-    if(isFinite(vals.lankle))drawLabel(g(L.A).x+10,g(L.A).y+10,`L Ankle ${vals.lankle.toFixed(1)}°`,colors.ankle);
-    if(isFinite(vals.rankle))drawLabel(g(R.A).x+10,g(R.A).y+10,`R Ankle ${vals.rankle.toFixed(1)}°`,colors.ankle);
+    const c=colors;
+    if(isFinite(vals.lknee))drawLabel(g(L.K).x+10,g(L.K).y+10,`L Knee ${vals.lknee.toFixed(1)}°`,c.knee);
+    if(isFinite(vals.rknee))drawLabel(g(R.K).x+10,g(R.K).y+10,`R Knee ${vals.rknee.toFixed(1)}°`,c.knee);
+    if(isFinite(vals.lelbow))drawLabel(g(L.E).x+10,g(L.E).y+10,`L Elbow ${vals.lelbow.toFixed(1)}°`,c.elbow);
+    if(isFinite(vals.relbow))drawLabel(g(R.E).x+10,g(R.E).y+10,`R Elbow ${vals.relbow.toFixed(1)}°`,c.elbow);
+    if(isFinite(vals.lhip))drawLabel(g(L.H).x+10,g(L.H).y+10,`L Hip ${vals.lhip.toFixed(1)}°`,c.hip);
+    if(isFinite(vals.rhip))drawLabel(g(R.H).x+10,g(R.H).y+10,`R Hip ${vals.rhip.toFixed(1)}°`,c.hip);
+    if(isFinite(vals.lankle))drawLabel(g(L.A).x+10,g(L.A).y+10,`L Ankle ${vals.lankle.toFixed(1)}°`,c.ankle);
+    if(isFinite(vals.rankle))drawLabel(g(R.A).x+10,g(R.A).y+10,`R Ankle ${vals.rankle.toFixed(1)}°`,c.ankle);
   }
   for(const k in vals){angleEls[k].textContent=isFinite(vals[k])?vals[k].toFixed(1):'–';}
 }
@@ -169,7 +194,7 @@ async function loop(){
   cur.textContent=fmt(video.currentTime);
 }
 
-// --- 操作部 ---
+// --- 再生系操作 ---
 document.getElementById('btnPlay').onclick=()=>{video.playbackRate=parseFloat(selRate.value);video.loop=chkLoop.checked;video.play();if(!running){running=true;loop();}};
 document.getElementById('btnPause').onclick=()=>{video.pause();running=false;cancelAnimationFrame(rafId);drawFrame();};
 document.getElementById('btnBack1f').onclick=()=>seekTo(video.currentTime-FRAME);
@@ -180,7 +205,7 @@ function seekTo(t){video.pause();running=false;video.currentTime=Math.max(0,Math
 selRate.onchange=()=>video.playbackRate=parseFloat(selRate.value);
 chkLoop.onchange=()=>video.loop=chkLoop.checked;
 seek.oninput=()=>{if(!video.src||!isFinite(video.duration))return;seekTo((seek.value/1000)*video.duration);};
-log('動画を選択 → BlazePoseで角度解析（縦横自動対応）','#a5b4fc');
+log('動画を選択 → BlazePoseで骨格＋角度解析（縦横自動対応）','#a5b4fc');
 </script>
 </body>
 </html>
