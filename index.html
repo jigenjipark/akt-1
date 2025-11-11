@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no"/>
-<title>スプリント骨格コーチ BlazePose版（縦横対応＋スケルトン表示）</title>
+<title>スプリント骨格コーチ BlazePose Lite版（縦横対応・スムーズ再生）</title>
 <style>
 :root { --w: 720px; }
 body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:#0c0f14; color:#e9eef6; }
@@ -30,7 +30,7 @@ header { text-align:center; padding:10px; }
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10"></script>
 </head>
 <body>
-<header><h1>スプリント骨格コーチ BlazePose版（縦横対応＋スケルトン表示）</h1></header>
+<header><h1>スプリント骨格コーチ BlazePose Lite版（縦横対応・スムーズ再生）</h1></header>
 <div class="wrap">
   <div class="row">
     <input id="file" class="btn" type="file" accept="video/*">
@@ -82,32 +82,43 @@ header { text-align:center; padding:10px; }
 <script type="module">
 import {FilesetResolver, PoseLandmarker} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10";
 
-const fileEl=document.getElementById('file'), video=document.getElementById('video'), canvas=document.getElementById('canvas');
-const ctx=canvas.getContext('2d'), showAngles=document.getElementById('showAngles');
-const selRate=document.getElementById('selRate'), chkLoop=document.getElementById('loop'), seek=document.getElementById('seek');
-const cur=document.getElementById('cur'), dur=document.getElementById('dur'), logEl=document.getElementById('log');
+const video=document.getElementById('video'), canvas=document.getElementById('canvas'), ctx=canvas.getContext('2d');
+const fileEl=document.getElementById('file'), showAngles=document.getElementById('showAngles');
+const selRate=document.getElementById('selRate'), chkLoop=document.getElementById('loop');
+const seek=document.getElementById('seek'), cur=document.getElementById('cur'), dur=document.getElementById('dur'), logEl=document.getElementById('log');
 const angleEls={lknee:lknee,rknee:rknee,lelbow:lelbow,relbow:relbow,lhip:lhip,rhip:rhip,lankle:lankle,rankle:rankle};
 let landmarker=null,running=false,rafId=null,vidW=0,vidH=0,scale=1,offX=0,offY=0;
+let lastInferTime=0; // 推論間引き用
 const FRAME=1/30,colors={knee:'#32de84',elbow:'#00bfff',hip:'#ba55d3',ankle:'#ffa500'};
 
 function log(m,c){const p=document.createElement('div');if(c)p.style.color=c;p.textContent=`[${new Date().toLocaleTimeString()}] ${m}`;logEl.prepend(p);}
 const fmt=s=>!isFinite(s)?'00:00.00':`${String(Math.floor(s/60)).padStart(2,'0')}:${(s%60).toFixed(2).padStart(5,'0')}`;
 
-function resizeCanvasToVideo(){
+function resizeCanvas(){
   const stage=document.getElementById('stage');
-  if(vidW && vidH){ stage.style.aspectRatio=`${vidW}/${vidH}`; }
+  if(vidW&&vidH){stage.style.aspectRatio=`${vidW}/${vidH}`;}
   const rect=canvas.getBoundingClientRect();
-  canvas.width=Math.round(rect.width); canvas.height=Math.round(rect.height);
-  const s=Math.min(canvas.width/vidW, canvas.height/vidH);
-  scale=s; offX=(canvas.width-vidW*s)/2; offY=(canvas.height-vidH*s)/2;
+  canvas.width=Math.round(rect.width);canvas.height=Math.round(rect.height);
+  const s=Math.min(canvas.width/vidW,canvas.height/vidH);
+  scale=s;offX=(canvas.width-vidW*s)/2;offY=(canvas.height-vidH*s)/2;
 }
 
-function angleDeg(ax,ay,bx,by,cx,cy){const v1x=ax-bx,v1y=ay-by,v2x=cx-bx,v2y=cy-by;const n1=Math.hypot(v1x,v1y),n2=Math.hypot(v2x,v2y);if(!n1||!n2)return NaN;let cos=(v1x*v2x+v1y*v2y)/(n1*n2);return Math.acos(Math.max(-1,Math.min(1,cos)))*180/Math.PI;}
+function angleDeg(ax,ay,bx,by,cx,cy){
+  const v1x=ax-bx,v1y=ay-by,v2x=cx-bx,v2y=cy-by;
+  const n1=Math.hypot(v1x,v1y),n2=Math.hypot(v2x,v2y);
+  if(!n1||!n2)return NaN;
+  let cos=(v1x*v2x+v1y*v2y)/(n1*n2);
+  return Math.acos(Math.max(-1,Math.min(1,cos)))*180/Math.PI;
+}
 function drawLabel(x,y,text,color){ctx.font='16px system-ui';ctx.textBaseline='top';const w=ctx.measureText(text).width+8;ctx.fillStyle='rgba(0,0,0,0.55)';ctx.fillRect(x-2,y-2,w,22);ctx.fillStyle=color;ctx.fillText(text,x,y);}
 
-async function init(){const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10/wasm");
-  landmarker=await PoseLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"},runningMode:"VIDEO"});
-  log("BlazePoseモデル読み込み完了","lime");
+async function init(){
+  const vision=await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.10/wasm");
+  landmarker=await PoseLandmarker.createFromOptions(vision,{
+    baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task"},
+    runningMode:"VIDEO"
+  });
+  log("BlazePose Liteモデル読み込み完了","lime");
 }
 await init();
 
@@ -115,52 +126,33 @@ fileEl.addEventListener('change',async e=>{
   const f=e.target.files[0];if(!f)return;
   video.src=URL.createObjectURL(f);
   await new Promise(r=>video.onloadedmetadata=r);
-  vidW=video.videoWidth; vidH=video.videoHeight;
-  resizeCanvasToVideo();
+  vidW=video.videoWidth;vidH=video.videoHeight;resizeCanvas();
   dur.textContent=fmt(video.duration);
   log(`動画読込: ${f.name} (${vidW}×${vidH})`,'#9ae6b4');
   drawFrame();
 });
-window.addEventListener('resize',resizeCanvasToVideo);
+window.addEventListener('resize',resizeCanvas);
 
-function transform(x,y){return [offX+x*scale, offY+y*scale];}
-
-function drawSkeleton(map,edges){
-  ctx.lineWidth=3; ctx.strokeStyle="#32de84";
-  for(const [a,b] of edges){
-    const p1=map[a],p2=map[b];
-    if(!p1||!p2)continue;
-    ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
-  }
-}
+function transform(x,y){return [offX+x*scale,offY+y*scale];}
 
 async function drawFrame(){
   if(!landmarker||!video||video.readyState<2)return;
-  const res=await landmarker.detectForVideo(video,performance.now());
+  const now=performance.now();
+  if(now-lastInferTime<50)return; // 20fps制限
+  lastInferTime=now;
+  const res=await landmarker.detectForVideo(video,now);
   if(!res.landmarks||!res.landmarks[0])return;
-  const kp=res.landmarks[0]; ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.fillStyle="#000";ctx.fillRect(0,0,canvas.width,canvas.height);
+  const kp=res.landmarks[0];ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.drawImage(video,offX,offY,vidW*scale,vidH*scale);
+  const map={};for(let i=0;i<kp.length;i++){const[x,y]=transform(kp[i].x*vidW,kp[i].y*vidH);map[i]={x,y};}
 
-  // 変換済み座標をmap化
-  const map={};
-  for(let i=0;i<kp.length;i++){
-    const [x,y]=transform(kp[i].x*vidW,kp[i].y*vidH);
-    map[i]={x,y};
-  }
+  // --- スケルトン描画 ---
+  const EDGES=[[11,13],[13,15],[12,14],[14,16],[11,12],[23,24],[23,25],[24,26],[25,27],[26,28],[27,29],[28,30],[27,31],[28,32],[11,23],[12,24]];
+  ctx.lineWidth=3;ctx.strokeStyle="#32de84";
+  for(const[a,b]of EDGES){const p1=map[a],p2=map[b];if(p1&&p2){ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();}}
+  Object.values(map).forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,3,0,Math.PI*2);ctx.fillStyle='#ffae00';ctx.fill();});
 
-  // --- 骨格ライン（主要部位） ---
-  const EDGES=[
-    [11,13],[13,15],[12,14],[14,16],[11,12],
-    [23,24],[23,25],[24,26],[25,27],[26,28],[27,29],[28,30],[27,31],[28,32],
-    [11,23],[12,24]
-  ];
-  drawSkeleton(map,EDGES);
-
-  // --- 角度算出 ---
-  const g=i=>map[i];
-  const L={S:12,E:14,W:16,H:24,K:26,A:28,T:32};
-  const R={S:11,E:13,W:15,H:23,K:25,A:27,T:31};
+  const g=i=>map[i];const L={S:12,E:14,W:16,H:24,K:26,A:28,T:32};const R={S:11,E:13,W:15,H:23,K:25,A:27,T:31};
   const vals={};
   vals.lknee=angleDeg(g(L.H).x,g(L.H).y,g(L.K).x,g(L.K).y,g(L.A).x,g(L.A).y);
   vals.rknee=angleDeg(g(R.H).x,g(R.H).y,g(R.K).x,g(R.K).y,g(R.A).x,g(R.A).y);
@@ -171,8 +163,8 @@ async function drawFrame(){
   vals.lankle=angleDeg(g(L.K).x,g(L.K).y,g(L.A).x,g(L.A).y,g(L.T).x,g(L.T).y);
   vals.rankle=angleDeg(g(R.K).x,g(R.K).y,g(R.A).x,g(R.A).y,g(R.T).x,g(R.T).y);
 
+  const c=colors;
   if(showAngles.checked){
-    const c=colors;
     if(isFinite(vals.lknee))drawLabel(g(L.K).x+10,g(L.K).y+10,`L Knee ${vals.lknee.toFixed(1)}°`,c.knee);
     if(isFinite(vals.rknee))drawLabel(g(R.K).x+10,g(R.K).y+10,`R Knee ${vals.rknee.toFixed(1)}°`,c.knee);
     if(isFinite(vals.lelbow))drawLabel(g(L.E).x+10,g(L.E).y+10,`L Elbow ${vals.lelbow.toFixed(1)}°`,c.elbow);
@@ -189,12 +181,12 @@ async function loop(){
   if(!running)return;
   rafId=requestAnimationFrame(loop);
   if(video.paused||video.ended||video.readyState<2)return;
-  await drawFrame();
+  drawFrame();
   seek.value=Math.floor((video.currentTime/video.duration)*1000)||0;
   cur.textContent=fmt(video.currentTime);
 }
 
-// --- 再生系操作 ---
+// 再生操作
 document.getElementById('btnPlay').onclick=()=>{video.playbackRate=parseFloat(selRate.value);video.loop=chkLoop.checked;video.play();if(!running){running=true;loop();}};
 document.getElementById('btnPause').onclick=()=>{video.pause();running=false;cancelAnimationFrame(rafId);drawFrame();};
 document.getElementById('btnBack1f').onclick=()=>seekTo(video.currentTime-FRAME);
@@ -205,7 +197,7 @@ function seekTo(t){video.pause();running=false;video.currentTime=Math.max(0,Math
 selRate.onchange=()=>video.playbackRate=parseFloat(selRate.value);
 chkLoop.onchange=()=>video.loop=chkLoop.checked;
 seek.oninput=()=>{if(!video.src||!isFinite(video.duration))return;seekTo((seek.value/1000)*video.duration);};
-log('動画を選択 → BlazePoseで骨格＋角度解析（縦横自動対応）','#a5b4fc');
+log('動画を選択 → BlazePose Liteで骨格＋角度解析（縦横対応・20fps制御）','#a5b4fc');
 </script>
 </body>
 </html>
